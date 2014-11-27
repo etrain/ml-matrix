@@ -57,19 +57,19 @@ object TruncatedSVD extends Logging {
    * @return A*B^T
    */
   def times(A: RowPartitionedMatrix, B: DenseMatrix[Double]): RowPartitionedMatrix = {
-    logInfo(s"In Row x Dense: Dimensions of A: (${A.numRows},${A.numCols}), Dimensions of B: (${B.rows},${B.cols})")
+    logDebug(s"In Row x Dense: Dimensions of A: (${A.numRows},${A.numCols}), Dimensions of B: (${B.rows},${B.cols})")
     val bB = A.rdd.context.broadcast(B)
     A.mapPartitions(a => {
-      logInfo(s"In Row x Dense mapper: Dimensions of a: (${a.rows},${a.cols}), Dimensions of B: (${bB.value.rows},${bB.value.cols})")
+      logDebug(s"In Row x Dense mapper: Dimensions of a: (${a.rows},${a.cols}), Dimensions of B: (${bB.value.rows},${bB.value.cols})")
       a*bB.value
     })
   }
 
   def times(A: DenseMatrix[Double], B: ColumnPartitionedMatrix): ColumnPartitionedMatrix = {
-    logInfo(s"In Dense x Col: Dimensions of A: (${A.rows},${A.cols}), Dimensions of B: (${B.numRows},${B.numCols})")
+    logDebug(s"In Dense x Col: Dimensions of A: (${A.rows},${A.cols}), Dimensions of B: (${B.numRows},${B.numCols})")
     val aB = B.rdd.context.broadcast(A)
     B.mapPartitions(b => {
-      logInfo(s"In Dense x Col mapper: Dimensions of a: ($b.rows},${b.cols}), Dimensions of B: (${aB.value.rows},${aB.value.cols})")
+      logDebug(s"In Dense x Col mapper: Dimensions of B: (${aB.value.rows},${aB.value.cols}), Dimensions of a: (${b.rows},${b.cols})")
       aB.value*b
     })
   }
@@ -153,9 +153,12 @@ object TruncatedSVD extends Logging {
 
     var begin = System.nanoTime()
 
-    val U, S, V = new TruncatedSVD().compute(A, rank, exponent)
+    val res = new TruncatedSVD().compute(A, rank, exponent)
     var end = System.nanoTime()
     logInfo(s"Truncated SVD of ${numRows}x${numCols} took ${(end - begin)/1e6}ms")
+
+    println(norm(res._2))
+    //logInfo(s"The norms of (U,S,V) are: ${norm(res._1)}, ${norm(res._2)}, ${norm(res._3)}")
 
     var c = readChar
     sc.stop()
