@@ -108,9 +108,7 @@ class TSQRSuite extends FunSuite with LocalSparkContext {
 
     for (i <- 0 until lambdas.length) {
       val x = xs(i)
-      val reg = DenseMatrix.eye[Double](16) :* lambdas(i)
-      // TODO: This checks our solution with the same method applied locally
-      // Investigate why using breeze's default solver gives some numerical error.
+      val reg = DenseMatrix.eye[Double](16) :* math.sqrt(lambdas(i))
       val toSolve = DenseMatrix.vertcat(localA, reg)
       val localQR = qr(toSolve)
       val localX = localQR.r \ (localQR.q.t * DenseMatrix.vertcat(localB,
@@ -118,5 +116,6 @@ class TSQRSuite extends FunSuite with LocalSparkContext {
       assert(Utils.aboutEq(x, localX))
     }
   }
+
 
 }
