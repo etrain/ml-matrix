@@ -38,12 +38,11 @@ class TruncatedSVD extends Logging with Serializable {
       i+=1
     }
 
-    val B = TruncatedSVD.times(Q, colA).collect
+    val B = TruncatedSVD.times(Q.t, colA).collect
     val ubsv = svd(B)
     val U = Q*ubsv.leftVectors
 
     (U, ubsv.singularValues, ubsv.rightVectors)
-
   }
 
 }
@@ -158,9 +157,20 @@ object TruncatedSVD extends Logging {
     logInfo(s"Truncated SVD of ${numRows}x${numCols} took ${(end - begin)/1e6}ms")
 
     println(norm(res._2))
+    println(res._2.toArray.map(_.formatted("%2.3f")).mkString(","))
+
+    val a = A.collect()
+
+    begin = System.nanoTime()
+    val asvd = svd(a)
+    end = System.nanoTime()
+    logInfo(s"Standard SVD of ${numRows}x${numCols} took ${(end - begin)/1e6}ms")
+    println(norm(asvd.singularValues))
+    println(asvd.singularValues.toArray.map(_.formatted("%2.3f")).mkString(","))
+
     //logInfo(s"The norms of (U,S,V) are: ${norm(res._1)}, ${norm(res._2)}, ${norm(res._3)}")
 
-    var c = readChar
+    //var c = readChar
     sc.stop()
   }
 }
