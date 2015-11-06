@@ -1,9 +1,12 @@
 package edu.berkeley.cs.amplab.mlmatrix
 
+import java.io.File
 import java.util.concurrent.ThreadLocalRandom
 
 import breeze.linalg._
 import breeze.linalg.svd.SVD
+import breeze.numerics._
+import edu.berkeley.cs.amplab.mlmatrix.util.QRUtils
 
 import org.apache.spark.SparkConf
 import org.apache.spark.SparkContext
@@ -13,36 +16,37 @@ import org.apache.spark.rdd.RDD
 class TruncatedSVD extends Logging with Serializable {
   def compute(A: RowPartitionedMatrix, k: Int, q: Int):
   (DenseMatrix[Double], DenseVector[Double], DenseMatrix[Double]) = {
-    val m = A.numRows
-    val n = A.numCols.toInt
+    val n = A.numRows
+    val d = A.numCols.toInt
 
     val colA = TruncatedSVD.rowToColumnPartitionedMatrix(A)
 
     val l = k + 5
 
     //Omega is a gaussian - this is maybe not worth doing distributed.
-    val Omega = TruncatedSVD.drawGaussian(A.rdd.context, n, l, A.rdd.partitions.length).collect
+    val Omega = TruncatedSVD.drawGaussian(A.rdd.context, d, l, A.rdd.partitions.length).collect
 
     val Y = TruncatedSVD.times(A, Omega).collect
 
-    var Q = svd(Y).leftVectors
+    var Q = QRUtils.qrQR(Y)._1
 
     var i = 0
     while (i < q) {
       val YHat = TruncatedSVD.times(Q.t, colA).collect
-      Q = svd(YHat.t).leftVectors
+      val Qh = QRUtils.qrQR(YHat.t)._1
 
-      val Yj = TruncatedSVD.times(A, Q).collect
-      Q = svd(Yj).leftVectors
+      val Yj = TruncatedSVD.times(A, Qh).collect
+      Q = QRUtils.qrQR(Yj)._1
 
       i+=1
     }
 
     val B = TruncatedSVD.times(Q.t, colA).collect
-    val ubsv = svd(B)
-    val U = Q*ubsv.leftVectors
+    val ubsv = svd.reduced(B)
 
-    (U, ubsv.singularValues, ubsv.rightVectors)
+    val U = Q * B
+
+    (U, ubsv.S, ubsv.Vt(0 until k, ::))
   }
 
 }
@@ -73,7 +77,6 @@ object TruncatedSVD extends Logging {
     })
   }
 
-  //TODO - Evan: Implement this and its inverse.
   def rowToColumnPartitionedMatrix(A: RowPartitionedMatrix): ColumnPartitionedMatrix = {
     //For each row set, flatMap to little blocks with columnStart as the key, and rowNumber and block level
     //as the value.
@@ -82,7 +85,9 @@ object TruncatedSVD extends Logging {
     val colsPerPartition = cols / A.getPartitionInfo.size
 
     val colRdd = A.rdd.mapPartitionsWithIndex { case (part, iter) => {
+
       //Now that I have block id and partition info and partition, split this up.
+
       val lmat = iter.next().mat
       //Chunk up the parts.
       val parts = (0 until cols by colsPerPartition).map(s => (s, lmat(::, s until min(s + colsPerPartition, cols))))
@@ -92,10 +97,10 @@ object TruncatedSVD extends Logging {
     }.groupByKey().map { case (id,block) => {
       //groupByKey, sortBy rowStart, and horzcat.
       val parts = block.toSeq.sortBy(x => x._1).map(x => x._2)
-      parts.reduceLeft((a,b) => DenseMatrix.vertcat(a,b))
+      (id, parts.reduceLeft((a,b) => DenseMatrix.vertcat(a,b)))
       }
 
-    }
+    }.sortBy(_._1).map(_._2) //Force the partitions into order.
 
     new ColumnPartitionedMatrix(colRdd.map(mat => ColumnPartition(mat)), Some(rows), Some(cols))
   }
@@ -123,6 +128,8 @@ object TruncatedSVD extends Logging {
     RowPartitionedMatrix.fromMatrix(matrixParts)
   }
 
+  def fro(x: DenseMatrix[Double]) = math.sqrt(x.map(i => i*i).sum)
+
   def main(args: Array[String]) {
     if (args.length < 6) {
       println("Usage: TruncatedSVD <master> <numRows> <numCols> <numParts> <rank> <exponent>")
@@ -146,18 +153,12 @@ object TruncatedSVD extends Logging {
 
     A.rdd.cache().count()
 
-    val At = rowToColumnPartitionedMatrix(A)
-
-    logInfo(s"Dimensions of A: (${A.numRows},${A.numCols}), Dimensions of At: (${At.numRows},${At.numCols})")
-
     var begin = System.nanoTime()
 
     val res = new TruncatedSVD().compute(A, rank, exponent)
     var end = System.nanoTime()
     logInfo(s"Truncated SVD of ${numRows}x${numCols} took ${(end - begin)/1e6}ms")
-
-    println(norm(res._2))
-    println(res._2.toArray.map(_.formatted("%2.3f")).mkString(","))
+    logInfo(s"Size of resulting crap (${res._3.rows}x${res._3.cols})")
 
     val a = A.collect()
 
@@ -165,12 +166,16 @@ object TruncatedSVD extends Logging {
     val asvd = svd(a)
     end = System.nanoTime()
     logInfo(s"Standard SVD of ${numRows}x${numCols} took ${(end - begin)/1e6}ms")
-    println(norm(asvd.singularValues))
-    println(asvd.singularValues.toArray.map(_.formatted("%2.3f")).mkString(","))
+    logInfo(s"Size of resulting Vt: (${asvd.Vt.rows}x${asvd.Vt.cols})")
 
-    //logInfo(s"The norms of (U,S,V) are: ${norm(res._1)}, ${norm(res._2)}, ${norm(res._3)}")
+    val topres = res._3.t
+    val topsvd = asvd.Vt(0 until rank, ::).t
 
-    //var c = readChar
+    val absdiff = abs(topres) - abs(topsvd)
+
+    val absnorm = math.sqrt(absdiff.map(x => x*x).sum)/(numRows*rank)
+    logInfo(s"Max diff ${absdiff.max}, norm: ${absnorm}")
+
     sc.stop()
   }
 }
